@@ -24,7 +24,7 @@ class StateController(Controller):
     def __init__(self, obs: dict[str, NDArray[np.floating]], info: dict, config: dict):
         super().__init__(obs, info, config)
         self._freq = config.env.freq
-        self._target_speed = 0.7  # Target speed in m/s
+        self._target_speed = 0.71  # Target speed in m/s
         
         self.start_pos = obs["pos"]
         self.known_gates = np.copy(obs["gates_pos"])
