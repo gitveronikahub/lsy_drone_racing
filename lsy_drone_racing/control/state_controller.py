@@ -74,11 +74,13 @@ class StateController(Controller):
 
                 if norm > 1e-5:
                     perp_unit = perp_2d / norm
-                    stretched_mid = np.array([
-                        mid_pt[0] + perp_unit[0] * -0.6,
-                        mid_pt[1] + perp_unit[1] * -0.6,
-                        mid_pt[2],
-                    ])
+                    stretched_mid = np.array(
+                        [
+                            mid_pt[0] + perp_unit[0] * -0.6,
+                            mid_pt[1] + perp_unit[1] * -0.6,
+                            mid_pt[2],
+                        ]
+                    )
                 else:
                     stretched_mid = mid_pt
 
@@ -194,9 +196,7 @@ class StateController(Controller):
         des_quat = R.from_euler("z", des_yaw).as_quat().reshape(-1)
         des_rpy_rate = np.zeros(3)
 
-        return np.concatenate(
-            (des_pos, des_vel, des_acc, des_quat, des_rpy_rate), dtype=np.float32
-        )
+        return np.concatenate((des_pos, des_vel, des_acc, des_quat, des_rpy_rate), dtype=np.float32)
 
     def step_callback(
         self,
