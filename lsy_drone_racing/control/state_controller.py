@@ -21,23 +21,27 @@ if TYPE_CHECKING:
 
 
 class StateController(Controller):
+    """State controller for drone trajectory generation and trajectory tracking."""
+
     def __init__(self, obs: dict[str, NDArray[np.floating]], info: dict, config: dict):
+        """Initialize the state controller and build the initial course spline."""
         super().__init__(obs, info, config)
         self._freq = config.env.freq
         self._target_speed = 0.71  # Target speed in m/s
-        
+
         self.start_pos = obs["pos"]
         self.known_gates = np.copy(obs["gates_pos"])
-        self.known_rpy = R.from_quat(obs["gates_quat"]).as_euler('xyz')
+        self.known_rpy = R.from_quat(obs["gates_quat"]).as_euler("xyz")
         self.known_obstacles = np.copy(obs["obstacles_pos"])
-        
+
         self.current_gate_pass_idx = 0
         self._tick = 0
-        
+
         # Build initial full-course trajectory anchored from episode start (t=0)
         self._update_spline()
 
-    def _update_spline(self):
+    def _update_spline(self) -> None:
+        """Update the cubic spline trajectory based on gate and obstacle positions."""
         pole_obstacles = np.array(self.known_obstacles)
 
         # Full gate execution sequence: Gate 1 -> Gate 2 -> Gate 3 -> Gate 4 -> Gate 2
@@ -51,33 +55,33 @@ class StateController(Controller):
         for i in range(len(full_ordered_gates)):
             g_pos = full_ordered_gates[i]
             g_yaw = full_ordered_rpy[i][2]
-            
+
             dir_vec = np.array([np.cos(g_yaw), np.sin(g_yaw), 0.0])
-            
+
             waypoints.append(g_pos - dir_vec * 0.20)
             waypoints.append(g_pos)
             waypoints.append(g_pos + dir_vec * 0.20)
-            
+
             # Midpoint between Gate 3 (pass 2) and Gate 4 (pass 3)
             if i == 2:
                 g3_pos = full_ordered_gates[2]
                 g4_pos = full_ordered_gates[3]
-                
+
                 mid_pt = (g3_pos + g4_pos) / 2.0
                 dir_2d = g4_pos[:2] - g3_pos[:2]
                 perp_2d = np.array([-dir_2d[1], dir_2d[0]])
                 norm = np.linalg.norm(perp_2d)
-                
+
                 if norm > 1e-5:
                     perp_unit = perp_2d / norm
                     stretched_mid = np.array([
                         mid_pt[0] + perp_unit[0] * -0.6,
                         mid_pt[1] + perp_unit[1] * -0.6,
-                        mid_pt[2]
+                        mid_pt[2],
                     ])
                 else:
                     stretched_mid = mid_pt
-                    
+
                 waypoints.append(stretched_mid)
 
         # 2. Refinement loop for pole avoidance across full path
@@ -88,13 +92,13 @@ class StateController(Controller):
             total_dist = np.sum(distances)
             if total_dist < 1e-5:
                 break
-                
+
             cum_dist = np.insert(np.cumsum(distances), 0, 0)
             est_duration = total_dist / self._target_speed
             t_pts = (cum_dist / total_dist) * est_duration
-            
-            spline = CubicSpline(t_pts, wp_arr, bc_type='clamped')
-            
+
+            spline = CubicSpline(t_pts, wp_arr, bc_type="clamped")
+
             t_eval = np.linspace(0, est_duration, 100)
             eval_pts = spline(t_eval)
 
@@ -103,10 +107,12 @@ class StateController(Controller):
             insert_t = 0.0
 
             if len(pole_obstacles) > 0:
-                dists_2d = np.linalg.norm(eval_pts[:, None, :2] - pole_obstacles[None, :, :2], axis=2)
+                dists_2d = np.linalg.norm(
+                    eval_pts[:, None, :2] - pole_obstacles[None, :, :2], axis=2
+                )
                 penetrations = pole_safety - dists_2d
                 max_idx = np.unravel_index(np.argmax(penetrations), penetrations.shape)
-                
+
                 if penetrations[max_idx] > worst_penetration:
                     worst_penetration = penetrations[max_idx]
                     pt_idx, pole_idx = max_idx
@@ -129,21 +135,21 @@ class StateController(Controller):
         waypoints = np.array(waypoints)
         distances = np.linalg.norm(np.diff(waypoints, axis=0), axis=1)
         total_dist = np.sum(distances)
-        
+
         self._t_total = total_dist / self._target_speed
-        
+
         cum_dist = np.insert(np.cumsum(distances), 0, 0)
         t_domain = (cum_dist / max(total_dist, 1e-5)) * self._t_total
-        
+
         # CubicSpline built over the entire course domain keeps the shape locked globally
-        self._des_pos_spline = CubicSpline(t_domain, waypoints, bc_type='clamped')
+        self._des_pos_spline = CubicSpline(t_domain, waypoints, bc_type="clamped")
 
     def compute_control(
         self, obs: dict[str, NDArray[np.floating]], info: dict | None = None
     ) -> NDArray[np.floating]:
-        
+        """Compute setpoints and control outputs for the current timestep."""
         full_ordered_gates = self.known_gates[[0, 1, 2, 3, 1]]
-        
+
         # Advance gate tracking index when within 0.25m of current target gate center
         if self.current_gate_pass_idx < len(full_ordered_gates):
             target_gate = full_ordered_gates[self.current_gate_pass_idx]
@@ -154,36 +160,43 @@ class StateController(Controller):
         recalculate = False
         if self.current_gate_pass_idx < len(self.known_gates):
             upcoming_gate_idx = [0, 1, 2, 3, 1][self.current_gate_pass_idx]
-            gate_shift = np.linalg.norm(self.known_gates[upcoming_gate_idx] - obs["gates_pos"][upcoming_gate_idx])
+            gate_shift = np.linalg.norm(
+                self.known_gates[upcoming_gate_idx] - obs["gates_pos"][upcoming_gate_idx]
+            )
             if gate_shift > 0.08:
                 recalculate = True
 
         # Check obstacle position shift
-        obstacle_shift = np.max(np.linalg.norm(self.known_obstacles - obs["obstacles_pos"], axis=1)) \
-                         if len(self.known_obstacles) > 0 else 0.0
+        obstacle_shift = (
+            np.max(np.linalg.norm(self.known_obstacles - obs["obstacles_pos"], axis=1))
+            if len(self.known_obstacles) > 0
+            else 0.0
+        )
         if obstacle_shift > 0.08:
             recalculate = True
 
         # Recalculate full global trajectory when a position update occurs
         if recalculate:
             self.known_gates = np.copy(obs["gates_pos"])
-            self.known_rpy = R.from_quat(obs["gates_quat"]).as_euler('xyz')
+            self.known_rpy = R.from_quat(obs["gates_quat"]).as_euler("xyz")
             self.known_obstacles = np.copy(obs["obstacles_pos"])
-            
+
             # Re-run full global spline build (preserves tick time and overall course geometry)
             self._update_spline()
-            
+
         t = min(self._tick / self._freq, self._t_total)
 
         des_pos = np.array(self._des_pos_spline(t)).reshape(-1)
         des_vel = np.zeros(3)
         des_acc = np.zeros(3)
-        
+
         des_yaw = 0.0
         des_quat = R.from_euler("z", des_yaw).as_quat().reshape(-1)
         des_rpy_rate = np.zeros(3)
-        
-        return np.concatenate((des_pos, des_vel, des_acc, des_quat, des_rpy_rate), dtype=np.float32)
+
+        return np.concatenate(
+            (des_pos, des_vel, des_acc, des_quat, des_rpy_rate), dtype=np.float32
+        )
 
     def step_callback(
         self,
@@ -194,14 +207,17 @@ class StateController(Controller):
         truncated: bool,
         info: dict,
     ) -> bool:
+        """Increment internal tick counter at each environment step."""
         self._tick += 1
         return False
 
-    def episode_callback(self):
+    def episode_callback(self) -> None:
+        """Reset internal state timers and indices between evaluation episodes."""
         self._tick = 0
         self.current_gate_pass_idx = 0
 
-    def render_callback(self, sim: Sim):
+    def render_callback(self, sim: Sim) -> None:
+        """Render trajectory visualizations and target points in simulator environment."""
         setpoint = self._des_pos_spline(self._tick / self._freq).reshape(1, -1)
         draw_points(sim, setpoint, rgba=(1.0, 0.0, 0.0, 1.0), size=0.02)
         trajectory = self._des_pos_spline(np.linspace(0, self._t_total, 100))
